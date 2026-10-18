@@ -44,10 +44,10 @@ async function findConnector() {
 async function saveWithConnector(connectorId, tab) {
   try {
     const res = await browser.runtime.sendMessage(connectorId, { command: "saveTab", tabId: tab.id, url: tab.url });
-    console.log("Connector replied", tab.url, res);
+    console.log("[P2Z] Connector replied", tab.url, res);
     return true;
   } catch (e) {
-    console.warn("Connector call failed", tab.url, e.message);
+    console.warn("[P2Z] Connector call failed", tab.url, e.message);
     return false;
   }
 }
@@ -59,16 +59,18 @@ async function processUrl(connectorId, url, windowId) {
     await sleep(SETTLE_MS);
     return await saveWithConnector(connectorId, await browser.tabs.get(tab.id));
   } finally {
-    browser.tabs.remove(tab.id).catch(() => {});
+    await browser.tabs.remove(tab.id).catch(() => {});
   }
 }
 
 async function run(sourceTab) {
+  console.log("[P2Z] started on", sourceTab.url);
   const connector = await findConnector();
-  if (!connector) { console.error("Zotero Connector not found"); return; }
+  if (!connector) { console.error("[P2Z] Zotero Connector not found"); return; }
+  console.log("[P2Z] using connector", connector.name, connector.id);
 
   const [urls] = await browser.tabs.executeScript(sourceTab.id, { code: `(${collectLinks})()` });
-  console.log(`Found ${urls.length} links`);
+  console.log(`[P2Z] Found ${urls.length} links`);
 
   let next = 0, ok = 0;
   const worker = async () => {
@@ -77,10 +79,10 @@ async function run(sourceTab) {
     }
   };
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));
-  console.log(`Done: ${ok}/${urls.length} calls succeeded`);
+  console.log(`[P2Z] Done: ${ok}/${urls.length} calls succeeded`);
 }
 
 browser.browserAction.onClicked.addListener((tab) => {
   browser.browserAction.setBadgeText({ text: "…" });
-  run(tab).finally(() => browser.browserAction.setBadgeText({ text: "" }));
+  run(tab).catch((e) => console.error("[P2Z] run failed:", e && (e.message || e), e && e.stack)).finally(() => browser.browserAction.setBadgeText({ text: "" }));
 });
