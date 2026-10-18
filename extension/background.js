@@ -220,6 +220,33 @@ async function processUrl(url) {
   }
 }
 
+async function pingZotero() {
+  const hdrs = { "Content-Type": "application/json", "X-Zotero-Connector-API-Version": "3" };
+  try {
+    const res = await fetch(`${ZOTERO}/ping`, { method: "POST", headers: hdrs, body: "{}" });
+    log("ping status", res.status, (await res.text()).slice(0, 200));
+    return res.ok;
+  } catch (e) {
+    log("ping failed:", e.message, "— running diagnostics");
+  }
+  const probes = [
+    ["GET 127.0.0.1", "http://127.0.0.1:23119/connector/ping", { method: "GET" }],
+    ["GET localhost", "http://localhost:23119/connector/ping", { method: "GET" }],
+    ["POST localhost", "http://localhost:23119/connector/ping", { method: "POST", headers: hdrs, body: "{}" }],
+    ["GET no-cors", "http://127.0.0.1:23119/connector/ping", { method: "GET", mode: "no-cors" }],
+    ["GET no Origin/cookies", "http://127.0.0.1:23119/connector/ping", { method: "GET", credentials: "omit", referrerPolicy: "no-referrer" }],
+  ];
+  for (const [name, url, opts] of probes) {
+    try {
+      const res = await fetch(url, opts);
+      log("probe", name, "->", res.status, res.type, (await res.text()).slice(0, 100));
+    } catch (e) {
+      log("probe", name, "-> FAILED", e.message);
+    }
+  }
+  return false;
+}
+
 async function run(sourceTab) {
   log("started on", sourceTab.url);
   if (!(await pingZotero())) return;
