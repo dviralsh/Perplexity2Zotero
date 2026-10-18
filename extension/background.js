@@ -5,7 +5,7 @@
 
 const ZOTERO = "http://127.0.0.1:23119/connector";
 const CONCURRENCY = 4;
-const FETCH_TIMEOUT_MS = 20000;
+const FETCH_TIMEOUT_MS = 10000;
 
 const log = (...a) => console.log("[P2Z]", ...a);
 
@@ -20,6 +20,79 @@ function collectLinks() {
     } catch (e) {}
   }
   return [...seen];
+}
+
+const TRACKING_PARAMS = /^(utm_.*|fbclid|gclid|ref|source|error|code|pdf|cookies.*)$/i;
+const DOI_RE = /10\.\d{4,9}\/[^\s?#]+/;
+
+function cleanUrl(url) {
+  const u = new URL(url);
+  for (const k of [...u.searchParams.keys()]) if (TRACKING_PARAMS.test(k)) u.searchParams.delete(k);
+  return u.href;
+}
+
+function doiFromUrl(url) {
+  const m = decodeURIComponent(url).match(DOI_RE);
+  return m ? m[0].replace(/(\.pdf|[.,;)])+$/i, "").toLowerCase() : null;
+}
+
+// One entry per paper: same DOI or same cleaned URL collapses; an HTML page beats a bare PDF link.
+function dedupeLinks(urls) {
+  const byKey = new Map();
+  for (const raw of urls) {
+    const url = cleanUrl(raw);
+    const key = doiFromUrl(url) || url;
+    const prev = byKey.get(key);
+    if (!prev || (/\.pdf$|\/pdf\//i.test(prev) && !/\.pdf$|\/pdf\//i.test(url))) byKey.set(key, url);
+  }
+  return [...byKey.values()];
+}
+
+const NCBI = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils";
+
+async function pubmedItem(pmid) {
+  const res = await fetch(`${NCBI}/efetch.fcgi?db=pubmed&id=${pmid}&retmode=xml`);
+  if (!res.ok) return null;
+  const x = new DOMParser().parseFromString(await res.text(), "text/xml");
+  const art = x.querySelector("PubmedArticle");
+  if (!art) return null;
+  const t = (sel) => (art.querySelector(sel) || {}).textContent || "";
+  const creators = [...art.querySelectorAll("AuthorList > Author")].map((a) => {
+    const last = (a.querySelector("LastName") || {}).textContent;
+    return last
+      ? { firstName: (a.querySelector("ForeName") || {}).textContent || "", lastName: last, creatorType: "author" }
+      : { lastName: (a.querySelector("CollectiveName") || {}).textContent || "", creatorType: "author", fieldMode: 1 };
+  });
+  const doi = (art.querySelector('ELocationID[EIdType="doi"]') || art.querySelector('ArticleId[IdType="doi"]') || {}).textContent || "";
+  const date = [t("JournalIssue PubDate Year"), t("JournalIssue PubDate Month"), t("JournalIssue PubDate Day")].filter(Boolean).join("-") || t("JournalIssue PubDate MedlineDate");
+  return {
+    id: Math.random().toString(36).slice(2),
+    itemType: "journalArticle",
+    title: t("ArticleTitle"),
+    creators,
+    date,
+    DOI: doi,
+    publicationTitle: t("Journal Title"),
+    volume: t("JournalIssue Volume"),
+    issue: t("JournalIssue Issue"),
+    pages: t("Pagination MedlinePgn"),
+    abstractNote: [...art.querySelectorAll("Abstract AbstractText")].map((e) => e.textContent).join("\n"),
+    url: `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`,
+    attachments: [],
+  };
+}
+
+// PubMed / PubMed Central pages (often served an anti-bot page to scripts) via NCBI's public API.
+async function itemFromNcbi(url) {
+  const pm = url.match(/pubmed\.ncbi\.nlm\.nih\.gov\/(\d+)/);
+  if (pm) return pubmedItem(pm[1]);
+  const pmc = url.match(/ncbi\.nlm\.nih\.gov\/(?:pmc\/)?articles\/(PMC\d+)/i);
+  if (!pmc) return undefined; // not an NCBI link
+  const res = await fetch(`https://pmc.ncbi.nlm.nih.gov/tools/idconv/api/v1/articles/?ids=${pmc[1]}&format=json`);
+  if (!res.ok) return null;
+  const rec = ((await res.json()).records || [])[0] || {};
+  if (rec.pmid) return pubmedItem(rec.pmid);
+  return rec.doi ? itemFromDoi(`https://doi.org/${rec.doi}`) : null;
 }
 
 // arxiv.org/pdf/ID and /html/ID carry no metadata; the /abs/ page does.
@@ -199,9 +272,27 @@ async function saveStandalonePdf(bytes, url) {
   if (!res.ok) throw new Error(`saveStandaloneAttachment ${res.status}`);
 }
 
+let claimedDois = new Set();
+
+async function saveOnce(item, pageUrl) {
+  const doi = (item.DOI || "").toLowerCase();
+  if (doi) {
+    if (claimedDois.has(doi)) { log("skipped (duplicate DOI)", item.title); return "skipped"; }
+    claimedDois.add(doi);
+  }
+  await saveToZotero(item, pageUrl);
+  log("saved", item.title);
+  return "saved";
+}
+
 async function processUrl(url) {
   try {
     const metaUrl = metadataUrl(url);
+    const ncbi = await itemFromNcbi(metaUrl);
+    if (ncbi !== undefined) {
+      if (!ncbi || !ncbi.title) { log("skipped (NCBI lookup found nothing)", url); return "skipped"; }
+      return await saveOnce(ncbi, metaUrl);
+    }
     const page = await fetchPage(metaUrl);
     if (!page) { log("skipped (unreachable / not HTML or PDF)", url); return "skipped"; }
     if (page.pdf) {
@@ -211,9 +302,7 @@ async function processUrl(url) {
     }
     const item = buildItem(page.doc, metaUrl) || (await itemFromDoi(metaUrl));
     if (!item) { log("skipped (no citation metadata)", url); return "skipped"; }
-    await saveToZotero(item, metaUrl);
-    log("saved", item.title);
-    return "saved";
+    return await saveOnce(item, metaUrl);
   } catch (e) {
     log("failed", url, e.message);
     return "failed";
@@ -251,8 +340,10 @@ async function run(sourceTab) {
   log("started on", sourceTab.url);
   if (!(await pingZotero())) return;
 
-  const [urls] = await browser.tabs.executeScript(sourceTab.id, { code: `(${collectLinks})()` });
-  log(`Found ${urls.length} external links`);
+  const [rawUrls] = await browser.tabs.executeScript(sourceTab.id, { code: `(${collectLinks})()` });
+  const urls = dedupeLinks(rawUrls);
+  claimedDois = new Set();
+  log(`Found ${rawUrls.length} external links, ${urls.length} after removing duplicates`);
 
   const counts = { saved: 0, skipped: 0, failed: 0 };
   let next = 0;
