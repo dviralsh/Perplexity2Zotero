@@ -250,9 +250,15 @@ async function processInTab(url) {
   try {
     await waitForLoad(tab.id);
     await new Promise((r) => setTimeout(r, TAB_SETTLE_MS)); // let client-side rendering finish
-    const [page] = await browser.tabs.executeScript(tab.id, {
-      code: "({ html: document.documentElement.outerHTML, type: document.contentType, href: location.href })",
-    });
+    let page;
+    try {
+      [page] = await browser.tabs.executeScript(tab.id, {
+        code: "({ html: document.documentElement.outerHTML, type: document.contentType, href: location.href })",
+      });
+    } catch (e) {
+      log("tab: page could not be read (error page / blocked)", url); // e.g. timed-out loads
+      return "skipped";
+    }
     if (!page || !/html/.test(page.type)) { log("tab: still no luck (not HTML)", url); return "skipped"; }
     const doc = new DOMParser().parseFromString(page.html, "text/html");
     const item = buildItem(doc, page.href);
