@@ -6,6 +6,9 @@
 const ZOTERO = "http://127.0.0.1:23119/connector";
 const CONCURRENCY = 4;
 const FETCH_TIMEOUT_MS = 10000;
+const TAB_TIMEOUT_MS = 25000;
+const TAB_SETTLE_MS = 3000;
+const TAB_CONCURRENCY = 2;
 
 const log = (...a) => console.log("[P2Z]", ...a);
 
@@ -277,7 +280,7 @@ let claimedDois = new Set();
 async function saveOnce(item, pageUrl) {
   const doi = (item.DOI || "").toLowerCase();
   if (doi) {
-    if (claimedDois.has(doi)) { log("skipped (duplicate DOI)", item.title); return "skipped"; }
+    if (claimedDois.has(doi)) { log("skipped (duplicate DOI)", item.title); return "duplicate"; }
     claimedDois.add(doi);
   }
   await saveToZotero(item, pageUrl);
@@ -307,6 +310,41 @@ async function processUrl(url) {
     if (e.name === "AbortError") { log("skipped (timed out)", url); return "skipped"; }
     log("failed", url, e.message);
     return "failed";
+  }
+}
+
+// Last resort for links the plain fetch could not read (blocked, JS-rendered, no tags):
+// load the page in a real background tab, then read the rendered DOM for citation metadata.
+function waitForLoad(tabId) {
+  return new Promise((resolve) => {
+    const done = () => { browser.tabs.onUpdated.removeListener(onUpdated); clearTimeout(timer); resolve(); };
+    const onUpdated = (id, info) => { if (id === tabId && info.status === "complete") done(); };
+    const timer = setTimeout(done, TAB_TIMEOUT_MS);
+    browser.tabs.onUpdated.addListener(onUpdated);
+    browser.tabs.get(tabId).then((t) => { if (t.status === "complete") done(); });
+  });
+}
+
+async function processInTab(url) {
+  const tab = await browser.tabs.create({ url, active: false });
+  try {
+    await waitForLoad(tab.id);
+    await new Promise((r) => setTimeout(r, TAB_SETTLE_MS)); // let client-side rendering finish
+    const [page] = await browser.tabs.executeScript(tab.id, {
+      code: "({ html: document.documentElement.outerHTML, type: document.contentType, href: location.href })",
+    });
+    if (!page || !/html/.test(page.type)) { log("tab: still no luck (not HTML)", url); return "skipped"; }
+    const doc = new DOMParser().parseFromString(page.html, "text/html");
+    const item = buildItem(doc, page.href) || (await itemFromDoi(page.href));
+    if (!item) { log("tab: still no citation metadata", url); return "skipped"; }
+    const status = await saveOnce(item, page.href);
+    if (status === "saved") log("  (rescued via tab)", url);
+    return status;
+  } catch (e) {
+    log("tab: failed", url, e.message);
+    return "failed";
+  } finally {
+    await browser.tabs.remove(tab.id).catch(() => {});
   }
 }
 
@@ -346,13 +384,31 @@ async function run(sourceTab) {
   claimedDois = new Set();
   log(`Found ${rawUrls.length} external links, ${urls.length} after removing duplicates`);
 
-  const counts = { saved: 0, skipped: 0, failed: 0 };
+  const counts = { saved: 0, skipped: 0, failed: 0, duplicate: 0 };
+  const retry = [];
   let next = 0;
   const worker = async () => {
-    while (next < urls.length) counts[await processUrl(urls[next++])]++;
+    while (next < urls.length) {
+      const url = urls[next++];
+      const status = await processUrl(url);
+      if (status === "skipped" || status === "failed") retry.push(url);
+      else counts[status]++;
+    }
   };
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));
-  log("Done:", JSON.stringify(counts));
+
+  // Second pass, only for links the regular way could not handle.
+  if (retry.length) log(`Retrying ${retry.length} links in a browser tab`);
+  let r = 0, rescued = 0;
+  const tabWorker = async () => {
+    while (r < retry.length) {
+      const status = await processInTab(retry[r++]);
+      if (status === "saved") rescued++;
+      counts[status]++;
+    }
+  };
+  await Promise.all(Array.from({ length: TAB_CONCURRENCY }, tabWorker));
+  log("Done:", JSON.stringify({ ...counts, rescuedViaTab: rescued }));
 }
 
 browser.browserAction.onClicked.addListener((tab) => {
