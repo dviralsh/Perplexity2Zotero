@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Perplexity2Zotero",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Reads citation metadata from every link on the page and saves it to Zotero.",
   "browser_specific_settings": {
     "gecko": {

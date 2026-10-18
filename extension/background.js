@@ -28,13 +28,20 @@ function metadataUrl(url) {
   return m ? `https://arxiv.org/abs/${m[1]}` : url;
 }
 
-async function fetchDoc(url) {
+// Returns { doc } for HTML pages, { pdf } (bytes) for PDFs, or null.
+async function fetchPage(url) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
   try {
     const res = await fetch(url, { credentials: "include", signal: ctl.signal });
-    if (!res.ok || !/html/.test(res.headers.get("content-type") || "")) return null;
-    return new DOMParser().parseFromString(await res.text(), "text/html");
+    if (!res.ok) return null;
+    const type = res.headers.get("content-type") || "";
+    if (/pdf/.test(type)) {
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      return String.fromCharCode(...bytes.slice(0, 4)) === "%PDF" ? { pdf: bytes } : null;
+    }
+    if (!/html/.test(type)) return null;
+    return { doc: new DOMParser().parseFromString(await res.text(), "text/html") };
   } finally {
     clearTimeout(timer);
   }
@@ -144,11 +151,65 @@ async function saveToZotero(item, pageUrl) {
   }
 }
 
+// Fallback for pages without citation_* tags: a DOI in the URL, looked up on CrossRef.
+async function itemFromDoi(url) {
+  const m = decodeURIComponent(url).match(/10\.\d{4,9}\/[^\s?#]+/);
+  if (!m) return null;
+  const doi = m[0].replace(/[.,;)]+$/, "");
+  const res = await fetch(`https://api.crossref.org/works/${encodeURIComponent(doi)}`);
+  if (!res.ok) return null;
+  const w = (await res.json()).message;
+  if (!w.title || !w.title[0]) return null;
+  const parts = (w.issued && w.issued["date-parts"] && w.issued["date-parts"][0]) || [];
+  const itemType = { "journal-article": "journalArticle", "proceedings-article": "conferencePaper", "posted-content": "preprint" }[w.type];
+  if (!itemType) return null;
+  const item = {
+    id: Math.random().toString(36).slice(2),
+    itemType,
+    title: w.title[0],
+    creators: (w.author || []).map((a) => ({ firstName: a.given || "", lastName: a.family || a.name || "", creatorType: "author" })),
+    date: parts.join("-"),
+    DOI: w.DOI,
+    url: w.URL,
+    attachments: [],
+  };
+  const venue = (w["container-title"] || [])[0] || "";
+  if (itemType === "conferencePaper") item.proceedingsTitle = venue;
+  else if (itemType === "journalArticle") Object.assign(item, { publicationTitle: venue, volume: w.volume || "", issue: w.issue || "", pages: w.page || "" });
+  return item;
+}
+
+// A bare PDF with no metadata: save it as a standalone attachment; Zotero then tries to
+// recognise it (title/authors) itself, and keeps it only as a file if it cannot.
+async function saveStandalonePdf(bytes, url) {
+  const res = await fetch(`${ZOTERO}/saveStandaloneAttachment`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/pdf",
+      "X-Zotero-Connector-API-Version": "3",
+      "X-Metadata": JSON.stringify({
+        sessionID: Math.random().toString(36).slice(2),
+        url,
+        contentType: "application/pdf",
+        title: decodeURIComponent(url.split("/").pop().replace(/\.pdf$/i, "")),
+      }),
+    },
+    body: bytes,
+  });
+  if (!res.ok) throw new Error(`saveStandaloneAttachment ${res.status}`);
+}
+
 async function processUrl(url) {
   try {
     const metaUrl = metadataUrl(url);
-    const doc = await fetchDoc(metaUrl);
-    const item = doc && buildItem(doc, metaUrl);
+    const page = await fetchPage(metaUrl);
+    if (!page) { log("skipped (unreachable / not HTML or PDF)", url); return "skipped"; }
+    if (page.pdf) {
+      await saveStandalonePdf(page.pdf, metaUrl);
+      log("saved PDF (Zotero will retrieve metadata)", url);
+      return "saved";
+    }
+    const item = buildItem(page.doc, metaUrl) || (await itemFromDoi(metaUrl));
     if (!item) { log("skipped (no citation metadata)", url); return "skipped"; }
     await saveToZotero(item, metaUrl);
     log("saved", item.title);
@@ -157,33 +218,6 @@ async function processUrl(url) {
     log("failed", url, e.message);
     return "failed";
   }
-}
-
-async function pingZotero() {
-  const hdrs = { "Content-Type": "application/json", "X-Zotero-Connector-API-Version": "3" };
-  try {
-    const res = await fetch(`${ZOTERO}/ping`, { method: "POST", headers: hdrs, body: "{}" });
-    log("ping status", res.status, (await res.text()).slice(0, 200));
-    return res.ok;
-  } catch (e) {
-    log("ping failed:", e.message, "— running diagnostics");
-  }
-  const probes = [
-    ["GET 127.0.0.1", "http://127.0.0.1:23119/connector/ping", { method: "GET" }],
-    ["GET localhost", "http://localhost:23119/connector/ping", { method: "GET" }],
-    ["POST localhost", "http://localhost:23119/connector/ping", { method: "POST", headers: hdrs, body: "{}" }],
-    ["GET no-cors", "http://127.0.0.1:23119/connector/ping", { method: "GET", mode: "no-cors" }],
-    ["GET no Origin/cookies", "http://127.0.0.1:23119/connector/ping", { method: "GET", credentials: "omit", referrerPolicy: "no-referrer" }],
-  ];
-  for (const [name, url, opts] of probes) {
-    try {
-      const res = await fetch(url, opts);
-      log("probe", name, "->", res.status, res.type, (await res.text()).slice(0, 100));
-    } catch (e) {
-      log("probe", name, "-> FAILED", e.message);
-    }
-  }
-  return false;
 }
 
 async function run(sourceTab) {
