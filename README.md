@@ -12,3 +12,8 @@ not exist"), so this talks to Zotero desktop directly.
 Start Zotero desktop, then `about:debugging` → This Firefox → Load Temporary Add-on →
 `extension/manifest.json`. Click **Inspect** on the entry to see `[P2Z]` log lines.
 Items land in whichever collection is selected in Zotero.
+
+## Privacy
+The extension contacts only (1) the pages linked from the page you click on, and (2) Zotero desktop
+on your own computer (`127.0.0.1:23119`). It does not use CrossRef, PubMed/NCBI, Unpaywall or any
+other third-party lookup service, and sends nothing to the developer.

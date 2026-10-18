@@ -51,53 +51,6 @@ function dedupeLinks(urls) {
   return [...byKey.values()];
 }
 
-const NCBI = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils";
-
-async function pubmedItem(pmid) {
-  const res = await fetch(`${NCBI}/efetch.fcgi?db=pubmed&id=${pmid}&retmode=xml`);
-  if (!res.ok) return null;
-  const x = new DOMParser().parseFromString(await res.text(), "text/xml");
-  const art = x.querySelector("PubmedArticle");
-  if (!art) return null;
-  const t = (sel) => (art.querySelector(sel) || {}).textContent || "";
-  const creators = [...art.querySelectorAll("AuthorList > Author")].map((a) => {
-    const last = (a.querySelector("LastName") || {}).textContent;
-    return last
-      ? { firstName: (a.querySelector("ForeName") || {}).textContent || "", lastName: last, creatorType: "author" }
-      : { lastName: (a.querySelector("CollectiveName") || {}).textContent || "", creatorType: "author", fieldMode: 1 };
-  });
-  const doi = (art.querySelector('ELocationID[EIdType="doi"]') || art.querySelector('ArticleId[IdType="doi"]') || {}).textContent || "";
-  const date = [t("JournalIssue PubDate Year"), t("JournalIssue PubDate Month"), t("JournalIssue PubDate Day")].filter(Boolean).join("-") || t("JournalIssue PubDate MedlineDate");
-  return {
-    id: Math.random().toString(36).slice(2),
-    itemType: "journalArticle",
-    title: t("ArticleTitle").replace(/\.$/, ""),
-    creators,
-    date,
-    DOI: doi,
-    publicationTitle: t("Journal Title"),
-    volume: t("JournalIssue Volume"),
-    issue: t("JournalIssue Issue"),
-    pages: t("Pagination MedlinePgn"),
-    abstractNote: [...art.querySelectorAll("Abstract AbstractText")].map((e) => e.textContent).join("\n"),
-    url: `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`,
-    attachments: [],
-  };
-}
-
-// PubMed / PubMed Central pages (often served an anti-bot page to scripts) via NCBI's public API.
-async function itemFromNcbi(url) {
-  const pm = url.match(/pubmed\.ncbi\.nlm\.nih\.gov\/(\d+)/);
-  if (pm) return pubmedItem(pm[1]);
-  const pmc = url.match(/ncbi\.nlm\.nih\.gov\/(?:pmc\/)?articles\/(PMC\d+)/i);
-  if (!pmc) return undefined; // not an NCBI link
-  const res = await fetch(`https://pmc.ncbi.nlm.nih.gov/tools/idconv/api/v1/articles/?ids=${pmc[1]}&format=json`);
-  if (!res.ok) return null;
-  const rec = ((await res.json()).records || [])[0] || {};
-  if (rec.pmid) return pubmedItem(rec.pmid);
-  return rec.doi ? itemFromDoi(`https://doi.org/${rec.doi}`) : null;
-}
-
 // arxiv.org/pdf/ID and /html/ID carry no metadata; the /abs/ page does.
 function metadataUrl(url) {
   const m = url.match(/^https?:\/\/(?:www\.)?arxiv\.org\/(?:pdf|html)\/([^?#]+?)(?:\.pdf)?$/);
@@ -227,34 +180,6 @@ async function saveToZotero(item, pageUrl) {
   }
 }
 
-// Fallback for pages without citation_* tags: a DOI in the URL, looked up on CrossRef.
-async function itemFromDoi(url) {
-  const m = decodeURIComponent(url).match(/10\.\d{4,9}\/[^\s?#]+/);
-  if (!m) return null;
-  const doi = m[0].replace(/[.,;)]+$/, "");
-  const res = await fetch(`https://api.crossref.org/works/${encodeURIComponent(doi)}`);
-  if (!res.ok) return null;
-  const w = (await res.json()).message;
-  if (!w.title || !w.title[0]) return null;
-  const parts = (w.issued && w.issued["date-parts"] && w.issued["date-parts"][0]) || [];
-  const itemType = { "journal-article": "journalArticle", "proceedings-article": "conferencePaper", "posted-content": "preprint" }[w.type];
-  if (!itemType) return null;
-  const item = {
-    id: Math.random().toString(36).slice(2),
-    itemType,
-    title: w.title[0],
-    creators: (w.author || []).map((a) => ({ firstName: a.given || "", lastName: a.family || a.name || "", creatorType: "author" })),
-    date: parts.join("-"),
-    DOI: w.DOI,
-    url: w.URL,
-    attachments: [],
-  };
-  const venue = (w["container-title"] || [])[0] || "";
-  if (itemType === "conferencePaper") item.proceedingsTitle = venue;
-  else if (itemType === "journalArticle") Object.assign(item, { publicationTitle: venue, volume: w.volume || "", issue: w.issue || "", pages: w.page || "" });
-  return item;
-}
-
 // A bare PDF with no metadata: save it as a standalone attachment; Zotero then tries to
 // recognise it (title/authors) itself, and keeps it only as a file if it cannot.
 async function saveStandalonePdf(bytes, url) {
@@ -291,11 +216,6 @@ async function saveOnce(item, pageUrl) {
 async function processUrl(url) {
   try {
     const metaUrl = metadataUrl(url);
-    const ncbi = await itemFromNcbi(metaUrl);
-    if (ncbi !== undefined) {
-      if (!ncbi || !ncbi.title) { log("skipped (NCBI lookup found nothing)", url); return "skipped"; }
-      return await saveOnce(ncbi, metaUrl);
-    }
     const page = await fetchPage(metaUrl);
     if (!page) { log("skipped (unreachable / not HTML or PDF)", url); return "skipped"; }
     if (page.pdf) {
@@ -303,7 +223,7 @@ async function processUrl(url) {
       log("saved PDF (Zotero will retrieve metadata)", url);
       return "saved";
     }
-    const item = buildItem(page.doc, metaUrl) || (await itemFromDoi(metaUrl));
+    const item = buildItem(page.doc, metaUrl);
     if (!item) { log("skipped (no citation metadata)", url); return "skipped"; }
     return await saveOnce(item, metaUrl);
   } catch (e) {
@@ -335,7 +255,7 @@ async function processInTab(url) {
     });
     if (!page || !/html/.test(page.type)) { log("tab: still no luck (not HTML)", url); return "skipped"; }
     const doc = new DOMParser().parseFromString(page.html, "text/html");
-    const item = buildItem(doc, page.href) || (await itemFromDoi(page.href));
+    const item = buildItem(doc, page.href);
     if (!item) { log("tab: still no citation metadata", url); return "skipped"; }
     const status = await saveOnce(item, page.href);
     if (status === "saved") log("  (rescued via tab)", url);
