@@ -1,15 +1,14 @@
 # Perplexity2Zotero
 
-Firefox extension: click the toolbar button on any page (e.g. a Perplexity thread) and it opens
-each link in a background tab, asks your installed Zotero Connector to save it, and closes the tab.
-Pages the Connector can't handle are simply not saved. No filtering is done by this extension.
+Firefox extension: click the toolbar button on any page (e.g. a Perplexity thread). It collects the
+external links, reads each page's `citation_*` meta tags (what the Zotero Connector's generic
+translator uses), and saves the result to the running Zotero desktop app via its local connector
+port (`127.0.0.1:23119`). Links without citation metadata are skipped.
+
+The Zotero Connector itself cannot be called from another extension (tested: "Receiving end does
+not exist"), so this talks to Zotero desktop directly.
 
 ## Try it
-`about:debugging` → This Firefox → Load Temporary Add-on → `extension/manifest.json`.
-Open the Browser Console (Ctrl+Shift+J) to see per-link results.
-
-## Known risk
-The Zotero Connector has no documented API for other extensions. `saveWithConnector` in
-`extension/background.js` sends a guessed message; if the Connector ignores it, the console will
-show failures and that function is the only thing to change (e.g. a different message, or
-falling back to keeping tabs open for manual saving).
+Start Zotero desktop, then `about:debugging` → This Firefox → Load Temporary Add-on →
+`extension/manifest.json`. Click **Inspect** on the entry to see `[P2Z]` log lines.
+Items land in whichever collection is selected in Zotero.

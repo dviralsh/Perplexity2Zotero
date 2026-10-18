@@ -2,11 +2,23 @@
   "manifest_version": 2,
   "name": "Perplexity2Zotero",
   "version": "0.1.0",
-  "description": "Opens every link on the current page and asks the Zotero Connector to save it.",
+  "description": "Reads citation metadata from every link on the page and saves it to Zotero.",
   "browser_specific_settings": {
-    "gecko": { "id": "perplexity2zotero@example.local", "strict_min_version": "109.0" }
+    "gecko": {
+      "id": "perplexity2zotero@example.local",
+      "strict_min_version": "109.0"
+    }
   },
-  "permissions": ["tabs", "activeTab", "management", "<all_urls>"],
-  "background": { "scripts": ["background.js"] },
-  "browser_action": { "default_title": "Send all links to Zotero" }
+  "permissions": [
+    "activeTab",
+    "<all_urls>"
+  ],
+  "background": {
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "browser_action": {
+    "default_title": "Send all links to Zotero"
+  }
 }
