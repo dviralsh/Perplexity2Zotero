@@ -90,21 +90,58 @@ function buildItem(doc, pageUrl) {
     item.ISSN = one("citation_issn");
   }
   const pdf = one("citation_pdf_url");
-  if (pdf) item.attachments.push({ title: "Full Text PDF", url: pdf, mimeType: "application/pdf" });
+  if (pdf) {
+    item.attachments.push({
+      id: Math.random().toString(36).slice(2),
+      title: "Full Text PDF",
+      url: pdf.replace(/^http:/, "https:"),
+      mimeType: "application/pdf",
+    });
+  }
   return item;
 }
 
+// Downloads the PDF in the browser (so the user's logins/cookies apply) and uploads it to Zotero.
+async function uploadAttachment(sessionID, parentItemID, att) {
+  const res = await fetch(att.url, { credentials: "include" });
+  if (!res.ok) throw new Error(`PDF download ${res.status}`);
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  if (String.fromCharCode(...bytes.slice(0, 4)) !== "%PDF") throw new Error("not a PDF (paywall/login page?)");
+  const up = await fetch(`${ZOTERO}/saveAttachment`, {
+    method: "POST",
+    headers: {
+      "Content-Type": att.mimeType,
+      "X-Zotero-Connector-API-Version": "3",
+      "X-Metadata": JSON.stringify({
+        sessionID,
+        id: att.id,
+        parentItemID,
+        title: att.title,
+        url: att.url,
+        contentType: att.mimeType,
+      }),
+    },
+    body: bytes,
+  });
+  if (!up.ok) throw new Error(`saveAttachment ${up.status} ${(await up.text()).slice(0, 150)}`);
+}
+
 async function saveToZotero(item, pageUrl) {
+  const sessionID = Math.random().toString(36).slice(2);
   const res = await fetch(`${ZOTERO}/saveItems`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Zotero-Connector-API-Version": "3" },
-    body: JSON.stringify({
-      sessionID: Math.random().toString(36).slice(2),
-      uri: pageUrl,
-      items: [item],
-    }),
+    body: JSON.stringify({ sessionID, uri: pageUrl, items: [item] }),
   });
   if (!res.ok) throw new Error(`Zotero responded ${res.status}`);
+  for (const att of item.attachments) {
+    try {
+      await uploadAttachment(sessionID, item.id, att);
+      log("  attached PDF for", item.title);
+    } catch (e) {
+      log("  PDF failed for", item.title, "-", e.message);
+    }
+  }
 }
 
 async function processUrl(url) {
