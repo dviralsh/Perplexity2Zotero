@@ -68,7 +68,7 @@ async function pubmedItem(pmid) {
   return {
     id: Math.random().toString(36).slice(2),
     itemType: "journalArticle",
-    title: t("ArticleTitle"),
+    title: t("ArticleTitle").replace(/\.$/, ""),
     creators,
     date,
     DOI: doi,
@@ -304,6 +304,7 @@ async function processUrl(url) {
     if (!item) { log("skipped (no citation metadata)", url); return "skipped"; }
     return await saveOnce(item, metaUrl);
   } catch (e) {
+    if (e.name === "AbortError") { log("skipped (timed out)", url); return "skipped"; }
     log("failed", url, e.message);
     return "failed";
   }
