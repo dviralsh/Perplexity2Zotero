@@ -1,0 +1,57 @@
+name: Release
+
+# Builds the extension zip and publishes it as a GitHub Release whenever a push to main
+# carries a manifest version that has no release yet. Bump "version" in extension/manifest.json
+# to ship a new version; no manual tagging needed.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "extension/**"
+      - "build.sh"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: v
+        run: echo "version=$(python3 -c "import json;print(json.load(open('extension/manifest.json'))['version'])")" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if this version is already released
+        id: exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${{ steps.v.outputs.version }}" >/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "v${{ steps.v.outputs.version }} already released - nothing to do."
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Lint extension
+        if: steps.exists.outputs.found == 'false'
+        continue-on-error: true
+        run: npx --yes web-ext@8 lint --source-dir extension
+
+      - name: Build zip
+        if: steps.exists.outputs.found == 'false'
+        run: ./build.sh
+
+      - name: Create GitHub Release
+        if: steps.exists.outputs.found == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ steps.v.outputs.version }}" dist/*.zip \
+            --target "$GITHUB_SHA" \
+            --title "v${{ steps.v.outputs.version }}" \
+            --generate-notes
