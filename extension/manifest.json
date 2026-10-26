@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
-  "name": "Perplexity2Zotero",
-  "version": "0.1.6",
-  "description": "Reads citation metadata from every link on the page and saves it to Zotero.",
+  "name": "Cites Extractor",
+  "version": "0.2.0",
+  "description": "Saves the papers linked from a web page, or cited in a PDF's bibliography, into Zotero.",
   "browser_specific_settings": {
     "gecko": {
       "id": "perplexity2zotero@example.local",
@@ -20,11 +20,13 @@
   ],
   "background": {
     "scripts": [
+      "lib/pdf.min.js",
+      "extract.js",
       "background.js"
     ]
   },
   "browser_action": {
-    "default_title": "Send all links to Zotero",
+    "default_title": "Cites Extractor: send linked / cited papers to Zotero",
     "default_icon": "icons/icon.svg"
   },
   "icons": {

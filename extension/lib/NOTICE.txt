@@ -1,0 +1,8 @@
+pdf.min.js and pdf.worker.min.js are unmodified copies of the "legacy" build of PDF.js
+(Mozilla, Apache License 2.0, see LICENSE-pdfjs.txt), taken from the npm package
+pdfjs-dist@3.11.174 (legacy/build/). Verify with:
+  npm pack pdfjs-dist@3.11.174 && tar -xzf pdfjs-dist-3.11.174.tgz
+  sha256sum package/legacy/build/pdf.min.js package/legacy/build/pdf.worker.min.js
+SHA-256:
+  978fd1b2d134a98e98966186a97777bebf87d8e770dadab1ece3687e21a5aa6c  pdf.min.js
+  38cde5311957b86bc3669f93e7d2566de333a90055ed6635bef60d9bf00e96f2  pdf.worker.min.js

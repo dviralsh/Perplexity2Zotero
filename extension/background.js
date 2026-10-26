@@ -1,6 +1,8 @@
-// Clicking the toolbar button collects all external links on the active page, reads each
-// page's citation metadata (the same <meta name="citation_*"> tags Zotero uses), and saves
-// it into the running Zotero desktop app through its local connector port.
+// Cites Extractor. Clicking the toolbar button collects the links of the active tab:
+//  - on a web page: all external links on the page;
+//  - on a PDF: the links/DOIs/arXiv ids in its bibliography (see extract.js).
+// Each link's citation metadata (the <meta name="citation_*"> tags Zotero uses) is read and
+// saved into the running Zotero desktop app through its local connector port.
 // Links with no citation metadata are skipped.
 
 const ZOTERO = "http://127.0.0.1:23119/connector";
@@ -9,6 +11,7 @@ const FETCH_TIMEOUT_MS = 10000;
 const TAB_TIMEOUT_MS = 25000;
 const TAB_SETTLE_MS = 3000;
 const TAB_CONCURRENCY = 2;
+const PDF_TIMEOUT_MS = 60000;
 
 const log = (...a) => console.log("[P2Z]", ...a);
 
@@ -301,14 +304,60 @@ async function pingZotero() {
   return false;
 }
 
+// Downloads the tab's own PDF (with the user's cookies); null if the tab is not a PDF.
+async function fetchPdfBytes(url) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), PDF_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { credentials: "include", signal: ctl.signal });
+    if (!res.ok) return null;
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    return String.fromCharCode(...bytes.slice(0, 4)) === "%PDF" ? bytes : null;
+  } catch (e) {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Returns the raw links to import from the active tab, for a web page or a PDF.
+async function collectFromTab(tab) {
+  let readFailed = false;
+  try {
+    const [type] = await browser.tabs.executeScript(tab.id, { code: "document.contentType" });
+    if (!/pdf/i.test(type)) {
+      const [links] = await browser.tabs.executeScript(tab.id, { code: `(${collectLinks})()` });
+      log(`Web page: ${links.length} external links`);
+      return links;
+    }
+  } catch (e) {
+    readFailed = true; // the built-in PDF viewer may refuse scripts; check for a PDF below
+  }
+
+  const bytes = await fetchPdfBytes(tab.url);
+  if (!bytes) {
+    log(readFailed ? "This tab cannot be read (not a web page or PDF)." : "Could not download this PDF.");
+    return [];
+  }
+  pdfjsLib.GlobalWorkerOptions.workerSrc = browser.runtime.getURL("lib/pdf.worker.min.js");
+  const res = await extractReferenceLinks(pdfjsLib, bytes);
+  log(
+    `PDF: ${res.pageCount} pages, ` +
+      (res.referencesFound ? `bibliography found from page ${res.startPage}` : "no References heading found, scanned the whole document") +
+      `, ${res.urls.length} links/DOIs`
+  );
+  const self = cleanUrl(tab.url);
+  return res.urls.filter((u) => cleanUrl(u) !== self);
+}
+
 async function run(sourceTab) {
   log("started on", sourceTab.url);
   if (!(await pingZotero())) return;
 
-  const [rawUrls] = await browser.tabs.executeScript(sourceTab.id, { code: `(${collectLinks})()` });
+  const rawUrls = await collectFromTab(sourceTab);
   const urls = dedupeLinks(rawUrls);
   claimedDois = new Set();
-  log(`Found ${rawUrls.length} external links, ${urls.length} after removing duplicates`);
+  log(`Found ${rawUrls.length} links, ${urls.length} after removing duplicates`);
 
   const counts = { saved: 0, skipped: 0, failed: 0, duplicate: 0 };
   const retry = [];
