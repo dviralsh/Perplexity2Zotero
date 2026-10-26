@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Cites Extractor options</title>
+  <style>
+    body { font: 15px system-ui, sans-serif; max-width: 40em; margin: 2em auto; padding: 0 1em; }
+    label { display: flex; gap: .6em; align-items: flex-start; }
+    .note { color: #555; margin: .6em 0 0 1.8em; font-size: 13px; }
+    #status { margin-top: 1em; color: #a00; }
+  </style>
+</head>
+<body>
+  <h1>Cites Extractor</h1>
+  <label>
+    <input type="checkbox" id="count">
+    <span><strong>Record each paper's citation count in Zotero's Extra field</strong></span>
+  </label>
+  <p class="note">
+    Off by default. When on, the DOI of each saved paper (or its arXiv DOI) is sent to
+    <a href="https://openalex.org" target="_blank" rel="noopener">OpenAlex</a> (api.openalex.org) to get the number of
+    times it is cited, and a line like <code>Citations: 123 (OpenAlex, 2026-01-31)</code> is added to the item.
+    Nothing else is sent. Papers without a DOI, and PDFs added as bare files, get no count.
+    This is the only place the add-on contacts a third-party service.
+  </p>
+  <div id="status"></div>
+  <script src="options.js"></script>
+</body>
+</html>

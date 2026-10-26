@@ -12,6 +12,7 @@ const TAB_TIMEOUT_MS = 25000;
 const TAB_SETTLE_MS = 3000;
 const TAB_CONCURRENCY = 2;
 const PDF_TIMEOUT_MS = 60000;
+const COUNT_TIMEOUT_MS = 10000;
 
 const log = (...a) => console.log("[P2Z]", ...a);
 
@@ -205,14 +206,50 @@ async function saveStandalonePdf(bytes, url) {
 
 let claimedDois = new Set();
 
+// Optional (off by default, see options.html): record the paper's citation count in Zotero's
+// Extra field, looked up by DOI on OpenAlex (api.openalex.org). Only the DOI is sent.
+let lookupCounts = false;
+
+async function countLookupEnabled() {
+  try {
+    const { countCitations } = await browser.storage.local.get("countCitations");
+    return !!countCitations && (await browser.permissions.contains({ data_collection: ["browsingActivity"] }));
+  } catch (e) {
+    return false;
+  }
+}
+
+async function citationCount(item) {
+  const doi = item.DOI || (item.archiveID ? `10.48550/arXiv.${item.archiveID.replace(/^arxiv:/i, "")}` : "");
+  if (!doi) return null;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), COUNT_TIMEOUT_MS);
+  try {
+    const res = await fetch(`https://api.openalex.org/works/https://doi.org/${doi.split("/").map(encodeURIComponent).join("/")}?select=cited_by_count`, { signal: ctl.signal });
+    if (!res.ok) return null;
+    const n = (await res.json()).cited_by_count;
+    return Number.isInteger(n) ? n : null;
+  } catch (e) {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function saveOnce(item, pageUrl) {
   const doi = (item.DOI || "").toLowerCase();
   if (doi) {
     if (claimedDois.has(doi)) { log("skipped (duplicate DOI)", item.title); return "duplicate"; }
     claimedDois.add(doi);
   }
+  if (lookupCounts) {
+    const n = await citationCount(item);
+    if (n !== null) {
+      item.extra = [item.extra, `Citations: ${n} (OpenAlex, ${new Date().toISOString().slice(0, 10)})`].filter(Boolean).join("\n");
+    }
+  }
   await saveToZotero(item, pageUrl);
-  log("saved", item.title);
+  log("saved", item.title, item.extra ? `[${item.extra.split("\n").pop()}]` : "");
   return "saved";
 }
 
@@ -357,7 +394,8 @@ async function run(sourceTab) {
   const rawUrls = await collectFromTab(sourceTab);
   const urls = dedupeLinks(rawUrls);
   claimedDois = new Set();
-  log(`Found ${rawUrls.length} links, ${urls.length} after removing duplicates`);
+  lookupCounts = await countLookupEnabled();
+  log(`Found ${rawUrls.length} links, ${urls.length} after removing duplicates` + (lookupCounts ? "; citation counts: on" : ""));
 
   const counts = { saved: 0, skipped: 0, failed: 0, duplicate: 0 };
   const retry = [];

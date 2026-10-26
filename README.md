@@ -23,7 +23,13 @@ PDF. It starts at the "References" heading (or the whole document if none is fou
 links plus DOIs, arXiv ids and URLs printed as text. Limits: scanned PDFs without a text layer have nothing
 to read, and the heading detection is a heuristic.
 
+## Citation counts (optional, off by default)
+In the add-on's options (about:addons -> Cites Extractor -> Preferences) you can turn on "Record each paper's
+citation count". Each saved paper's DOI (or arXiv DOI) is then looked up on OpenAlex and a line like
+`Citations: 123 (OpenAlex, 2026-01-31)` is added to the item's Extra field. Papers without a DOI, and PDFs
+added as bare files, get no count. Firefox asks for the optional data-collection permission when you enable it.
+
 ## Privacy
-The extension contacts only (1) the pages linked from the page or PDF you click on, and (2) Zotero desktop
-on your own computer (`127.0.0.1:23119`). It does not use CrossRef, PubMed/NCBI, Unpaywall or any
-other third-party lookup service, and sends nothing to the developer.
+By default the extension contacts only (1) the pages linked from the page or PDF you click on, and (2) Zotero
+desktop on your own computer (`127.0.0.1:23119`), and sends nothing to the developer. The one exception is the
+optional citation-count setting above, which sends DOIs to api.openalex.org when you turn it on.

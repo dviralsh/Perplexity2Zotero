@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Cites Extractor",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Saves the papers linked from a web page, or cited in a PDF's bibliography, into Zotero.",
   "browser_specific_settings": {
     "gecko": {
@@ -10,6 +10,9 @@
       "data_collection_permissions": {
         "required": [
           "none"
+        ],
+        "optional": [
+          "browsingActivity"
         ]
       }
     },
@@ -19,6 +22,7 @@
   },
   "permissions": [
     "activeTab",
+    "storage",
     "<all_urls>"
   ],
   "background": {
@@ -35,5 +39,9 @@
   "icons": {
     "48": "icons/icon.svg",
     "96": "icons/icon.svg"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
   }
 }
